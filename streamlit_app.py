@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import openpyxl
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
@@ -10,7 +9,6 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
-import ssl
 from sklearn.metrics import (
     accuracy_score,
     roc_auc_score,
@@ -20,8 +18,6 @@ from sklearn.metrics import (
     matthews_corrcoef,
     confusion_matrix,
 )
-import kagglehub
-from kagglehub import KaggleDatasetAdapter
 
 
 @st.cache_data
