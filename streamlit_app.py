@@ -189,19 +189,29 @@ X_train, X_val, y_train, y_val, X_holdout, y_holdout, class_names = preprocess_d
 # Load models dynamically
 available_models = load_models()
 
-# Sidebar section for model selection
-st.sidebar.title("Model Selection")
+# Sidebar for view and model selection
+st.sidebar.title("View and Model Selection")
+view = st.sidebar.radio("Choose a view", ["Single Model View", "Model Comparison View"])
+
 model_names = sorted(list(available_models.keys()))
-selected_model_names = st.sidebar.multiselect(
-    "Choose models to train",
-    model_names,
-    default=model_names
-)
-selected_models = {name: available_models[name] for name in selected_model_names}
+selected_model_names = []
+
+if view == "Single Model View":
+    # Model selection for single view
+    model_name = st.sidebar.selectbox("Choose a model", model_names)
+    if model_name:
+        selected_model_names = [model_name]
+else: # Model Comparison View
+    # Model selection for comparison view
+    selected_model_names = st.sidebar.multiselect(
+        "Choose models to compare",
+        model_names,
+        default=model_names
+    )
 
 # Main panel view
-if not selected_models:
-    st.warning("Please select at least one model from the sidebar to train.")
+if not selected_model_names:
+    st.warning("Please select at least one model from the sidebar to continue.")
     st.stop()
 
 # Train and evaluate models on the validation set
@@ -211,18 +221,13 @@ results, trained_models = train_and_evaluate(X_train, y_train, X_val, y_val, tup
 # Evaluate models on the hold-out test set
 holdout_results = evaluate_holdout_set(trained_models, X_holdout, y_holdout)
 
-# Sidebar for navigation
-st.sidebar.title("View Selection")
-view = st.sidebar.radio("Choose a view", ["Single Model View", "Model Comparison View"])
 
 if view == "Single Model View":
     st.header("Single Model View")
+    model_name = selected_model_names[0] # There will only be one
     
-    # Model selection
-    model_name = st.sidebar.selectbox("Choose a model", list(results.keys()))
-    
-    # Display metrics
-    st.subheader(f"Metrics for {model_name}")
+    # Display validation metrics
+    st.subheader(f"Validation Set Metrics for {model_name}")
     metrics = results[model_name]
     
     col1, col2, col3 = st.columns(3)
@@ -234,9 +239,23 @@ if view == "Single Model View":
     col4.metric("Recall", f"{metrics['Recall']:.4f}")
     col5.metric("F1 Score", f"{metrics['F1 Score']:.4f}")
     col6.metric("MCC", f"{metrics['MCC']:.4f}")
+
+    # Display holdout metrics
+    st.subheader(f"Hold-out Set Metrics for {model_name}")
+    holdout_metrics = holdout_results[model_name]
+
+    col7, col8, col9 = st.columns(3)
+    col7.metric("Holdout Accuracy", f"{holdout_metrics['Holdout Accuracy']:.4f}")
+    col8.metric("Holdout AUC", f"{holdout_metrics['Holdout AUC']:.4f}")
+    col9.metric("Holdout Precision", f"{holdout_metrics['Holdout Precision']:.4f}")
+
+    col10, col11, col12 = st.columns(3)
+    col10.metric("Holdout Recall", f"{holdout_metrics['Holdout Recall']:.4f}")
+    col11.metric("Holdout F1 Score", f"{holdout_metrics['Holdout F1 Score']:.4f}")
+    col12.metric("Holdout MCC", f"{holdout_metrics['Holdout MCC']:.4f}")
     
     # Display confusion matrix
-    st.subheader("Confusion Matrix")
+    st.subheader("Confusion Matrix (Validation Set)")
     cm = metrics["Confusion Matrix"]
     fig = px.imshow(cm, text_auto=True, aspect="auto",
                     labels=dict(x="Predicted", y="Actual", color="Count"),
