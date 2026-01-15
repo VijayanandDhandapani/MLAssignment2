@@ -3,12 +3,6 @@ import pandas as pd
 import plotly.express as px
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
 from sklearn.metrics import (
     accuracy_score,
     roc_auc_score,
@@ -18,6 +12,8 @@ from sklearn.metrics import (
     matthews_corrcoef,
     confusion_matrix,
 )
+import os
+import importlib
 
 
 @st.cache_data
@@ -42,59 +38,81 @@ def load_data():
 @st.cache_data
 def preprocess_data(df):
     """
-    Preprocesses the Dry Bean dataset by encoding the target variable,
-    splitting the data, and scaling the features.
+    Preprocesses the Dry Bean dataset by creating a hold-out test set,
+    encoding the target variable, splitting the remaining data, and
+    scaling the features.
     """
-    X = df.drop("Class", axis=1)
-    y = df["Class"]
+    # Separate the hold-out test set
+    main_df, holdout_df = train_test_split(df, test_size=500, random_state=42, stratify=df['Class'])
 
-    # Encode target variable
+    X_main = main_df.drop("Class", axis=1)
+    y_main = main_df["Class"]
+    X_holdout = holdout_df.drop("Class", axis=1)
+    y_holdout = holdout_df["Class"]
+
+    # Encode target variable on the entire main dataset before splitting
     le = LabelEncoder()
-    y = le.fit_transform(y)
+    y_main_encoded = le.fit_transform(y_main)
+    class_names = le.classes_  # Store class names for later
 
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y)
+    # Transform holdout y using the same encoder
+    y_holdout_encoded = le.transform(y_holdout)
+
+    # Split the main data into training and validation sets
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_main, y_main_encoded, test_size=0.3, random_state=42, stratify=y_main_encoded)
 
     # Scale features
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
+    X_val = scaler.transform(X_val)
+    X_holdout = scaler.transform(X_holdout)
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_val, y_train, y_val, X_holdout, y_holdout_encoded, class_names
 
-@st.cache_data
-def train_and_evaluate(X_train, y_train, X_test, y_test):
+def load_models():
     """
-    Trains and evaluates multiple classification models.
+    Dynamically loads all models from the 'models' directory.
     """
-    models = {
-        "Logistic Regression": LogisticRegression(random_state=42),
-        "Decision Tree": DecisionTreeClassifier(random_state=42),
-        "K-Nearest Neighbor": KNeighborsClassifier(),
-        "Naive Bayes": GaussianNB(),
-        "Random Forest": RandomForestClassifier(random_state=42),
-        "XGBoost": XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='mlogloss'),
-    }
+    models = {}
+    model_files = [f for f in os.listdir('models') if f.endswith('.py') and not f.startswith('__')]
 
+    for model_file in model_files:
+        module_name = model_file[:-3]
+        module = importlib.import_module(f'models.{module_name}')
+        # Format the name for display, e.g., 'logistic_regression' -> 'Logistic Regression'
+        model_name_display = module_name.replace('_', ' ').title()
+        models[model_name_display] = module.get_model()
+
+    return models
+
+# Allow caching of scikit-learn models
+@st.cache_resource
+def train_and_evaluate(X_train, y_train, X_val, y_val, models_to_run):
+    """
+    Trains and evaluates multiple classification models on the validation set.
+    Returns the results and the trained models.
+    """
     results = {}
+    trained_models = {}
 
-    for model_name, model in models.items():
+    for model_name, model in models_to_run.items():
         # Train the model
         model.fit(X_train, y_train)
+        trained_models[model_name] = model
 
-        # Make predictions
-        y_pred = model.predict(X_test)
-        y_pred_proba = model.predict_proba(X_test)
+        # Make predictions on the validation set
+        y_pred = model.predict(X_val)
+        y_pred_proba = model.predict_proba(X_val)
 
         # Calculate metrics
-        accuracy = accuracy_score(y_test, y_pred)
-        auc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr')
-        precision = precision_score(y_test, y_pred, average='weighted')
-        recall = recall_score(y_test, y_pred, average='weighted')
-        f1 = f1_score(y_test, y_pred, average='weighted')
-        mcc = matthews_corrcoef(y_test, y_pred)
-        cm = confusion_matrix(y_test, y_pred)
+        accuracy = accuracy_score(y_val, y_pred)
+        auc = roc_auc_score(y_val, y_pred_proba, multi_class='ovr')
+        precision = precision_score(y_val, y_pred, average='weighted')
+        recall = recall_score(y_val, y_pred, average='weighted')
+        f1 = f1_score(y_val, y_pred, average='weighted')
+        mcc = matthews_corrcoef(y_val, y_pred)
+        cm = confusion_matrix(y_val, y_pred)
 
         results[model_name] = {
             "Accuracy": accuracy,
@@ -106,20 +124,90 @@ def train_and_evaluate(X_train, y_train, X_test, y_test):
             "Confusion Matrix": cm,
         }
     
-    return results
+    return results, trained_models
+
+def evaluate_holdout_set(trained_models, X_holdout, y_holdout):
+    """
+    Evaluates the trained models on the hold-out test set.
+    """
+    holdout_results = {}
+
+    for model_name, model in trained_models.items():
+        # Make predictions
+        y_pred = model.predict(X_holdout)
+        y_pred_proba = model.predict_proba(X_holdout)
+
+        # Calculate metrics
+        accuracy = accuracy_score(y_holdout, y_pred)
+        auc = roc_auc_score(y_holdout, y_pred_proba, multi_class='ovr')
+        precision = precision_score(y_holdout, y_pred, average='weighted')
+        recall = recall_score(y_holdout, y_pred, average='weighted')
+        f1 = f1_score(y_holdout, y_pred, average='weighted')
+        mcc = matthews_corrcoef(y_holdout, y_pred)
+
+        holdout_results[model_name] = {
+            "Holdout Accuracy": accuracy,
+            "Holdout AUC": auc,
+            "Holdout Precision": precision,
+            "Holdout Recall": recall,
+            "Holdout F1 Score": f1,
+            "Holdout MCC": mcc,
+        }
+
+    return holdout_results
 
 # Main app
 st.title("Machine Learning Classification Dashboard")
 
-# Load and preprocess data
-df = load_data()
-X_train, X_test, y_train, y_test = preprocess_data(df)
+# --- Data Loading Section ---
+st.sidebar.title("Data Source")
+uploaded_file = st.sidebar.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
 
-# Train and evaluate models
-results = train_and_evaluate(X_train, y_train, X_test, y_test)
+df = None
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+        st.sidebar.success("Custom dataset loaded.")
+    except Exception as e:
+        st.error(f"Error loading uploaded file: {e}")
+        st.stop()
+else:
+    # Use the default dataset if no file is uploaded
+    df = load_data()
+
+# --- The rest of the app assumes 'df' is loaded ---
+# Load and preprocess data
+X_train, X_val, y_train, y_val, X_holdout, y_holdout, class_names = preprocess_data(df)
+
+# Load models dynamically
+available_models = load_models()
+
+# Sidebar section for model selection
+st.sidebar.title("Model Selection")
+model_names = sorted(list(available_models.keys()))
+selected_model_names = st.sidebar.multiselect(
+    "Choose models to train",
+    model_names,
+    default=model_names
+)
+selected_models = {name: available_models[name] for name in selected_model_names}
+
+# Main panel view
+if not selected_models:
+    st.warning("Please select at least one model from the sidebar to train.")
+    st.stop()
+
+# Train and evaluate models on the validation set
+results, trained_models = train_and_evaluate(X_train, y_train, X_val, y_val, selected_models)
+
+# Evaluate models on the hold-out test set
+holdout_results = evaluate_holdout_set(trained_models, X_holdout, y_holdout)
 
 # Sidebar for navigation
-st.sidebar.title("Navigation")
+st.sidebar.title("View Selection")
 view = st.sidebar.radio("Choose a view", ["Single Model View", "Model Comparison View"])
 
 if view == "Single Model View":
@@ -147,8 +235,8 @@ if view == "Single Model View":
     cm = metrics["Confusion Matrix"]
     fig = px.imshow(cm, text_auto=True, aspect="auto",
                     labels=dict(x="Predicted", y="Actual", color="Count"),
-                    x=df['Class'].unique(),
-                    y=df['Class'].unique()
+                    x=class_names,
+                    y=class_names
                    )
     fig.update_layout(title_text=f'Confusion Matrix for {model_name}', title_x=0.5)
     st.plotly_chart(fig)
@@ -157,17 +245,23 @@ if view == "Single Model View":
 else: # Model Comparison View
     st.header("Model Comparison View")
     
-    # Display summary table
-    st.subheader("Model Performance Summary")
+    # Combine validation and holdout results for comparison
     summary_df = pd.DataFrame(results).T.drop(columns="Confusion Matrix")
-    summary_df.index.name = "Model"
-    st.dataframe(summary_df)
+    holdout_summary_df = pd.DataFrame(holdout_results).T
+
+    comparison_df = summary_df.join(holdout_summary_df)
+    comparison_df.index.name = "Model"
+
+    # Display summary table
+    st.subheader("Model Performance: Validation vs. Hold-out Set")
+    st.dataframe(comparison_df)
     
     # Interactive bar chart
     st.subheader("Compare Models by Metric")
-    metric_to_compare = st.selectbox("Select a metric", summary_df.columns)
+    # Let user select from combined metrics
+    metric_to_compare = st.selectbox("Select a metric", comparison_df.columns)
     
-    fig = px.bar(summary_df, x=summary_df.index, y=metric_to_compare,
+    fig = px.bar(comparison_df, x=comparison_df.index, y=metric_to_compare,
                  title=f"Model Comparison for {metric_to_compare}",
                  labels={'x': 'Model', 'y': metric_to_compare},
                  text_auto=True)
