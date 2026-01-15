@@ -87,14 +87,21 @@ def load_models():
 
     return models
 
-def train_and_evaluate_model(model, X_train, y_train, X_val, y_val):
+@st.cache_resource
+def train_model(model_name, X_train, y_train):
     """
-    Trains and evaluates a single classification model.
+    Trains a single model and caches it.
     """
-    # Train the model
+    models = load_models()
+    model = models[model_name]
     model.fit(X_train, y_train)
+    return model
 
-    # Make predictions on the validation set
+def evaluate_model(model, X_val, y_val):
+    """
+    Evaluates a trained model on the validation set.
+    """
+    # Make predictions
     y_pred = model.predict(X_val)
     y_pred_proba = model.predict_proba(X_val)
 
@@ -217,11 +224,15 @@ total_models = len(selected_model_names)
 
 for i, model_name in enumerate(selected_model_names):
     status_text.text(f"Training {model_name}... ({i+1}/{total_models})")
-    model = available_models[model_name]
 
-    # Train and evaluate a single model
-    results[model_name] = train_and_evaluate_model(model, X_train, y_train, X_val, y_val)
-    trained_models[model_name] = model # Store the trained model instance
+    # Train the model (will be cached)
+    trained_model = train_model(model_name, X_train, y_train)
+
+    # Evaluate the trained model on the validation set
+    results[model_name] = evaluate_model(trained_model, X_val, y_val)
+
+    # Store the trained model instance for holdout evaluation
+    trained_models[model_name] = trained_model
 
     progress_bar.progress((i + 1) / total_models)
 
@@ -287,7 +298,7 @@ else: # Model Comparison View
     with col1:
         # Display summary table
         st.subheader("Model Performance")
-        st.dataframe(comparison_df)
+        st.dataframe(comparison_df, use_container_width=True)
 
     with col2:
         # Interactive bar chart
