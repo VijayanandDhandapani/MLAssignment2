@@ -87,48 +87,42 @@ def load_models():
 
     return models
 
-# Allow caching of scikit-learn models
 @st.cache_resource
-def train_and_evaluate(X_train, y_train, X_val, y_val, model_names_to_run):
+def train_model(model_name, X_train, y_train):
     """
-    Trains and evaluates multiple classification models on the validation set.
-    Returns the results and the trained models.
+    Trains a single model and caches it.
     """
-    results = {}
-    trained_models = {}
-    all_models = load_models()
+    models = load_models()
+    model = models[model_name]
+    model.fit(X_train, y_train)
+    return model
 
-    models_to_run = {name: all_models[name] for name in model_names_to_run if name in all_models}
+def evaluate_model(model, X_val, y_val):
+    """
+    Evaluates a trained model on the validation set.
+    """
+    # Make predictions
+    y_pred = model.predict(X_val)
+    y_pred_proba = model.predict_proba(X_val)
 
-    for model_name, model in models_to_run.items():
-        # Train the model
-        model.fit(X_train, y_train)
-        trained_models[model_name] = model
+    # Calculate metrics
+    accuracy = accuracy_score(y_val, y_pred)
+    auc = roc_auc_score(y_val, y_pred_proba, multi_class='ovr')
+    precision = precision_score(y_val, y_pred, average='weighted')
+    recall = recall_score(y_val, y_pred, average='weighted')
+    f1 = f1_score(y_val, y_pred, average='weighted')
+    mcc = matthews_corrcoef(y_val, y_pred)
+    cm = confusion_matrix(y_val, y_pred)
 
-        # Make predictions on the validation set
-        y_pred = model.predict(X_val)
-        y_pred_proba = model.predict_proba(X_val)
-
-        # Calculate metrics
-        accuracy = accuracy_score(y_val, y_pred)
-        auc = roc_auc_score(y_val, y_pred_proba, multi_class='ovr')
-        precision = precision_score(y_val, y_pred, average='weighted')
-        recall = recall_score(y_val, y_pred, average='weighted')
-        f1 = f1_score(y_val, y_pred, average='weighted')
-        mcc = matthews_corrcoef(y_val, y_pred)
-        cm = confusion_matrix(y_val, y_pred)
-
-        results[model_name] = {
-            "Accuracy": accuracy,
-            "AUC": auc,
-            "Precision": precision,
-            "Recall": recall,
-            "F1 Score": f1,
-            "MCC": mcc,
-            "Confusion Matrix": cm,
-        }
-    
-    return results, trained_models
+    return {
+        "Accuracy": accuracy,
+        "AUC": auc,
+        "Precision": precision,
+        "Recall": recall,
+        "F1 Score": f1,
+        "MCC": mcc,
+        "Confusion Matrix": cm,
+    }
 
 def evaluate_holdout_set(trained_models, X_holdout, y_holdout):
     """
@@ -168,12 +162,14 @@ st.sidebar.title("Data Source")
 uploaded_file = st.sidebar.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
 
 df = None
+dataset_name = ""
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
+        dataset_name = uploaded_file.name
         st.sidebar.success("Custom dataset loaded.")
     except Exception as e:
         st.error(f"Error loading uploaded file: {e}")
@@ -181,6 +177,9 @@ if uploaded_file is not None:
 else:
     # Use the default dataset if no file is uploaded
     df = load_data()
+    dataset_name = "Dry Bean Dataset"
+
+st.sidebar.markdown(f"**Current Dataset:** {dataset_name}")
 
 # --- The rest of the app assumes 'df' is loaded ---
 # Load and preprocess data
@@ -189,54 +188,90 @@ X_train, X_val, y_train, y_val, X_holdout, y_holdout, class_names = preprocess_d
 # Load models dynamically
 available_models = load_models()
 
-# Sidebar section for model selection
-st.sidebar.title("Model Selection")
+# Sidebar for view and model selection
+st.sidebar.title("View and Model Selection")
+view = st.sidebar.radio("Choose a view", ["Single Model View", "Model Comparison View"])
+
 model_names = sorted(list(available_models.keys()))
-selected_model_names = st.sidebar.multiselect(
-    "Choose models to train",
-    model_names,
-    default=model_names
-)
-selected_models = {name: available_models[name] for name in selected_model_names}
+selected_model_names = []
+
+if view == "Single Model View":
+    # Model selection for single view
+    model_name = st.sidebar.selectbox("Choose a model", model_names)
+    if model_name:
+        selected_model_names = [model_name]
+else: # Model Comparison View
+    # Model selection for comparison view
+    selected_model_names = st.sidebar.multiselect(
+        "Choose models to compare",
+        model_names,
+        default=model_names
+    )
 
 # Main panel view
-if not selected_models:
-    st.warning("Please select at least one model from the sidebar to train.")
+if not selected_model_names:
+    st.warning("Please select at least one model from the sidebar to continue.")
     st.stop()
 
-# Train and evaluate models on the validation set
-# We pass a tuple of names, which is hashable
-results, trained_models = train_and_evaluate(X_train, y_train, X_val, y_val, tuple(selected_model_names))
+# --- Model Training and Evaluation ---
+st.header("Model Training Progress")
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+results = {}
+trained_models = {}
+total_models = len(selected_model_names)
+
+for i, model_name in enumerate(selected_model_names):
+    status_text.text(f"Training {model_name}... ({i+1}/{total_models})")
+
+    # Train the model (will be cached)
+    trained_model = train_model(model_name, X_train, y_train)
+
+    # Evaluate the trained model on the validation set
+    results[model_name] = evaluate_model(trained_model, X_val, y_val)
+
+    # Store the trained model instance for holdout evaluation
+    trained_models[model_name] = trained_model
+
+    progress_bar.progress((i + 1) / total_models)
+
+status_text.text(f"All {total_models} models trained successfully!")
+
 
 # Evaluate models on the hold-out test set
 holdout_results = evaluate_holdout_set(trained_models, X_holdout, y_holdout)
 
-# Sidebar for navigation
-st.sidebar.title("View Selection")
-view = st.sidebar.radio("Choose a view", ["Single Model View", "Model Comparison View"])
 
 if view == "Single Model View":
-    st.header("Single Model View")
-    
-    # Model selection
-    model_name = st.sidebar.selectbox("Choose a model", list(results.keys()))
-    
-    # Display metrics
-    st.subheader(f"Metrics for {model_name}")
+    st.header(f"Single Model View: {selected_model_names[0]}")
+    model_name = selected_model_names[0] # There will only be one
     metrics = results[model_name]
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Accuracy", f"{metrics['Accuracy']:.4f}")
-    col2.metric("AUC", f"{metrics['AUC']:.4f}")
-    col3.metric("Precision", f"{metrics['Precision']:.4f}")
-    
-    col4, col5, col6 = st.columns(3)
-    col4.metric("Recall", f"{metrics['Recall']:.4f}")
-    col5.metric("F1 Score", f"{metrics['F1 Score']:.4f}")
-    col6.metric("MCC", f"{metrics['MCC']:.4f}")
-    
-    # Display confusion matrix
-    st.subheader("Confusion Matrix")
+    holdout_metrics = holdout_results[model_name]
+
+    # Use columns for a side-by-side layout for metrics
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Validation Set Metrics")
+        st.metric("Accuracy", f"{metrics['Accuracy']:.4f}")
+        st.metric("AUC", f"{metrics['AUC']:.4f}")
+        st.metric("Precision", f"{metrics['Precision']:.4f}")
+        st.metric("Recall", f"{metrics['Recall']:.4f}")
+        st.metric("F1 Score", f"{metrics['F1 Score']:.4f}")
+        st.metric("MCC", f"{metrics['MCC']:.4f}")
+
+    with col2:
+        st.subheader("Hold-out Set Metrics")
+        st.metric("Accuracy", f"{holdout_metrics['Holdout Accuracy']:.4f}")
+        st.metric("AUC", f"{holdout_metrics['Holdout AUC']:.4f}")
+        st.metric("Precision", f"{holdout_metrics['Holdout Precision']:.4f}")
+        st.metric("Recall", f"{holdout_metrics['Holdout Recall']:.4f}")
+        st.metric("F1 Score", f"{holdout_metrics['Holdout F1 Score']:.4f}")
+        st.metric("MCC", f"{holdout_metrics['Holdout MCC']:.4f}")
+
+    # Display confusion matrix below the metrics, centered
+    st.subheader("Confusion Matrix (Validation Set)")
     cm = metrics["Confusion Matrix"]
     fig = px.imshow(cm, text_auto=True, aspect="auto",
                     labels=dict(x="Predicted", y="Actual", color="Count"),
@@ -244,12 +279,12 @@ if view == "Single Model View":
                     y=class_names
                    )
     fig.update_layout(title_text=f'Confusion Matrix for {model_name}', title_x=0.5)
-    st.plotly_chart(fig)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 else: # Model Comparison View
     st.header("Model Comparison View")
-    
+
     # Combine validation and holdout results for comparison
     summary_df = pd.DataFrame(results).T.drop(columns="Confusion Matrix")
     holdout_summary_df = pd.DataFrame(holdout_results).T
@@ -257,18 +292,23 @@ else: # Model Comparison View
     comparison_df = summary_df.join(holdout_summary_df)
     comparison_df.index.name = "Model"
 
-    # Display summary table
-    st.subheader("Model Performance: Validation vs. Hold-out Set")
-    st.dataframe(comparison_df)
-    
-    # Interactive bar chart
-    st.subheader("Compare Models by Metric")
-    # Let user select from combined metrics
-    metric_to_compare = st.selectbox("Select a metric", comparison_df.columns)
-    
-    fig = px.bar(comparison_df, x=comparison_df.index, y=metric_to_compare,
-                 title=f"Model Comparison for {metric_to_compare}",
-                 labels={'x': 'Model', 'y': metric_to_compare},
-                 text_auto=True)
-    fig.update_layout(title_x=0.5)
-    st.plotly_chart(fig)
+    # Use columns for a side-by-side layout
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Display summary table
+        st.subheader("Model Performance")
+        st.dataframe(comparison_df, use_container_width=True)
+
+    with col2:
+        # Interactive bar chart
+        st.subheader("Compare Models by Metric")
+        # Let user select from combined metrics
+        metric_to_compare = st.selectbox("Select a metric", comparison_df.columns)
+
+        fig = px.bar(comparison_df, x=comparison_df.index, y=metric_to_compare,
+                     title=f"Model Comparison for {metric_to_compare}",
+                     labels={'x': 'Model', 'y': metric_to_compare},
+                     text_auto=True)
+        fig.update_layout(title_x=0.5)
+        st.plotly_chart(fig, use_container_width=True)
